@@ -6,7 +6,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-
 import { 
   Download, 
   Crop, 
@@ -16,8 +15,14 @@ import {
   ZoomOut,
   Facebook,
   Instagram,
-  Youtube
+  Youtube,
+  Circle,
+  FlipHorizontal,
+  FlipVertical,
+  Palette,
+  AlignCenter
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 const FILTER_TYPES = [
   { name: 'Normal', filter: 'none' },
@@ -28,6 +33,9 @@ const FILTER_TYPES = [
   { name: 'Warm', filter: 'sepia(30%) saturate(140%)' },
   { name: 'Dramatic', filter: 'contrast(140%) brightness(90%)' },
   { name: 'Vivid', filter: 'saturate(180%) contrast(120%)' },
+  { name: 'Matte', filter: 'brightness(90%) saturate(80%) contrast(90%)' },
+  { name: 'Retro', filter: 'sepia(50%) hue-rotate(-30deg) saturate(140%)' },
+  { name: 'Cold', filter: 'brightness(100%) saturate(80%) hue-rotate(180deg)' },
 ];
 
 const SOCIAL_CROP_PRESETS = {
@@ -49,6 +57,8 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
   const [brightness, setBrightness] = useState(100);
   const [contrast, setContrast] = useState(100);
   const [saturation, setSaturation] = useState(100);
+  const [hue, setHue] = useState(0);
+  const [blur, setBlur] = useState(0);
   const [rotation, setRotation] = useState(0);
   const [selectedFilter, setSelectedFilter] = useState('none');
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -56,6 +66,13 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
   const [textColor, setTextColor] = useState('#ffffff');
   const [textSize, setTextSize] = useState(24);
   const [cropPreset, setCropPreset] = useState<keyof typeof SOCIAL_CROP_PRESETS>('original');
+  const [isCircleCrop, setIsCircleCrop] = useState(false);
+  const [flipHorizontal, setFlipHorizontal] = useState(false);
+  const [flipVertical, setFlipVertical] = useState(false);
+  const [textPosition, setTextPosition] = useState<'top' | 'center' | 'bottom'>('center');
+  const [textShadow, setTextShadow] = useState(false);
+  const [textBgColor, setTextBgColor] = useState('');
+  const [backgroundColor, setBackgroundColor] = useState('');
 
   // Initialize the image when the URL changes
   useEffect(() => {
@@ -71,7 +88,12 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
   // Re-render when any parameter changes
   useEffect(() => {
     renderCanvas();
-  }, [brightness, contrast, saturation, rotation, selectedFilter, zoomLevel, textOverlay, textColor, textSize, cropPreset]);
+  }, [
+    brightness, contrast, saturation, rotation, selectedFilter, zoomLevel, 
+    textOverlay, textColor, textSize, cropPreset, isCircleCrop, 
+    flipHorizontal, flipVertical, hue, blur, textPosition, 
+    textShadow, textBgColor, backgroundColor
+  ]);
 
   // Canvas rendering function
   const renderCanvas = useCallback(() => {
@@ -100,6 +122,12 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
+    // Apply background color if set
+    if (backgroundColor) {
+      ctx.fillStyle = backgroundColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    
     // Save context before transformations
     ctx.save();
     
@@ -108,6 +136,9 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
     
     // Apply rotation
     ctx.rotate((rotation * Math.PI) / 180);
+    
+    // Apply horizontal and vertical flips
+    ctx.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
     
     // Apply zoom
     ctx.scale(zoomLevel, zoomLevel);
@@ -133,6 +164,15 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
       drawHeight = img.height;
     }
     
+    // Create a circle clip path if circle crop is enabled
+    if (isCircleCrop) {
+      ctx.beginPath();
+      const radius = Math.min(canvasWidth, canvasHeight) / 2;
+      ctx.arc(0, 0, radius, 0, Math.PI * 2, true);
+      ctx.closePath();
+      ctx.clip();
+    }
+    
     // Draw image centered and cropped
     ctx.drawImage(
       img,
@@ -150,7 +190,8 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
     ctx.restore();
     
     // Apply filters using CSS filters (cannot directly manipulate pixels w/o extra libraries)
-    if (selectedFilter !== 'none' || brightness !== 100 || contrast !== 100 || saturation !== 100) {
+    if (selectedFilter !== 'none' || brightness !== 100 || contrast !== 100 || 
+        saturation !== 100 || hue !== 0 || blur !== 0) {
       const selectedFilterStyle = FILTER_TYPES.find(f => f.filter === selectedFilter)?.filter || '';
       
       // Get the image data to apply back
@@ -168,11 +209,19 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
       // Clear original canvas
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
+      // Apply background color if set (after clearing the canvas)
+      if (backgroundColor) {
+        ctx.fillStyle = backgroundColor;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      
       // Set the filters on the main canvas context
       ctx.filter = `${selectedFilterStyle} 
                    brightness(${brightness}%) 
                    contrast(${contrast}%) 
-                   saturate(${saturation}%)`;
+                   saturate(${saturation}%)
+                   hue-rotate(${hue}deg)
+                   blur(${blur}px)`;
       
       // Draw the temp canvas back to the main canvas with filters applied
       ctx.drawImage(tempCanvas, 0, 0);
@@ -184,13 +233,64 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
     // Add text overlay if exists
     if (textOverlay) {
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      
+      // Set text position
+      let textY;
+      switch (textPosition) {
+        case 'top':
+          textY = textSize + 10;
+          break;
+        case 'bottom':
+          textY = canvas.height - textSize - 10;
+          break;
+        case 'center':
+        default:
+          textY = canvas.height / 2;
+      }
+      
+      ctx.textBaseline = textPosition === 'center' ? 'middle' : 'top';
+      
+      // Draw text background if color set
+      if (textBgColor) {
+        ctx.save();
+        ctx.fillStyle = textBgColor;
+        const textWidth = ctx.measureText(textOverlay).width + 20; // Add padding
+        const textHeight = textSize * 1.5;
+        const textBgY = textPosition === 'center' ? 
+          textY - textHeight / 2 : 
+          (textPosition === 'top' ? textY - 5 : textY - textHeight + 5);
+        
+        ctx.fillRect(canvas.width / 2 - textWidth / 2, textBgY, textWidth, textHeight);
+        ctx.restore();
+      }
+      
+      // Apply text shadow if enabled
+      if (textShadow) {
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+        ctx.shadowBlur = 3;
+        ctx.shadowOffsetX = 2;
+        ctx.shadowOffsetY = 2;
+      }
+      
       ctx.fillStyle = textColor;
       ctx.font = `${textSize}px Arial`;
-      ctx.fillText(textOverlay, canvas.width / 2, canvas.height / 2);
+      ctx.fillText(textOverlay, canvas.width / 2, textY);
+      
+      // Reset shadow
+      if (textShadow) {
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+      }
     }
     
-  }, [brightness, contrast, saturation, rotation, selectedFilter, zoomLevel, textOverlay, textColor, textSize, cropPreset]);
+  }, [
+    brightness, contrast, saturation, rotation, selectedFilter, zoomLevel, 
+    textOverlay, textColor, textSize, cropPreset, isCircleCrop, 
+    flipHorizontal, flipVertical, hue, blur, textPosition, 
+    textShadow, textBgColor, backgroundColor
+  ]);
 
   // Function to handle the download
   const handleDownload = () => {
@@ -217,6 +317,11 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
       const change = direction === 'cw' ? 90 : -90;
       return (prev + change) % 360;
     });
+  };
+
+  // Toggle circle crop
+  const toggleCircleCrop = () => {
+    setIsCircleCrop(prev => !prev);
   };
 
   return (
@@ -264,6 +369,14 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
                 <ZoomOut className="h-4 w-4 mr-2" />
                 Zoom Out
               </Button>
+              <Button 
+                variant={isCircleCrop ? "default" : "outline"} 
+                size="sm" 
+                onClick={toggleCircleCrop}
+              >
+                <Circle className="h-4 w-4 mr-2" />
+                {isCircleCrop ? "Disable" : "Enable"} Circle Crop
+              </Button>
               <Button variant="default" onClick={handleDownload}>
                 <Download className="h-4 w-4 mr-2" />
                 Download
@@ -281,6 +394,7 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
                 <TabsTrigger className="flex-1" value="adjust">Adjust</TabsTrigger>
                 <TabsTrigger className="flex-1" value="filters">Filters</TabsTrigger>
                 <TabsTrigger className="flex-1" value="text">Text</TabsTrigger>
+                <TabsTrigger className="flex-1" value="effects">Effects</TabsTrigger>
               </TabsList>
               
               <div className="p-4 custom-scrollbar overflow-y-auto max-h-[50vh]">
@@ -302,6 +416,28 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
                         </Button>
                       );
                     })}
+                  </div>
+                  
+                  <div className="flex flex-col space-y-4 pt-2 border-t border-border mt-4">
+                    <h3 className="font-medium text-sm">Transform</h3>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() => setFlipHorizontal(prev => !prev)}
+                        variant={flipHorizontal ? "default" : "outline"}
+                        className="w-full"
+                      >
+                        <FlipHorizontal className="h-4 w-4 mr-2" />
+                        Flip Horizontal
+                      </Button>
+                      <Button
+                        onClick={() => setFlipVertical(prev => !prev)}
+                        variant={flipVertical ? "default" : "outline"}
+                        className="w-full"
+                      >
+                        <FlipVertical className="h-4 w-4 mr-2" />
+                        Flip Vertical
+                      </Button>
+                    </div>
                   </div>
                 </TabsContent>
                 
@@ -347,6 +483,34 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
                       onValueChange={(vals) => setSaturation(vals[0])}
                     />
                   </div>
+                  
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <Label>Hue Rotation: {hue}°</Label>
+                    </div>
+                    <Slider
+                      className="slider-control"
+                      min={0}
+                      max={360}
+                      step={1}
+                      value={[hue]}
+                      onValueChange={(vals) => setHue(vals[0])}
+                    />
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <Label>Blur: {blur}px</Label>
+                    </div>
+                    <Slider
+                      className="slider-control"
+                      min={0}
+                      max={10}
+                      step={0.5}
+                      value={[blur]}
+                      onValueChange={(vals) => setBlur(vals[0])}
+                    />
+                  </div>
                 </TabsContent>
                 
                 <TabsContent value="filters" className="mt-0">
@@ -377,7 +541,7 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label htmlFor="text-color">Color</Label>
+                      <Label htmlFor="text-color">Text Color</Label>
                       <div className="flex items-center space-x-2">
                         <div 
                           className="w-8 h-8 rounded-full border border-border" 
@@ -405,6 +569,139 @@ export function ImageEditor({ imageUrl, onBack }: ImageEditorProps) {
                         onValueChange={(vals) => setTextSize(vals[0])}
                       />
                     </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label>Text Position</Label>
+                    <div className="flex gap-2">
+                      <Button
+                        variant={textPosition === 'top' ? "default" : "outline"}
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setTextPosition('top')}
+                      >
+                        Top
+                      </Button>
+                      <Button
+                        variant={textPosition === 'center' ? "default" : "outline"}
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setTextPosition('center')}
+                      >
+                        <AlignCenter className="h-4 w-4 mr-1" />
+                        Center
+                      </Button>
+                      <Button
+                        variant={textPosition === 'bottom' ? "default" : "outline"}
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => setTextPosition('bottom')}
+                      >
+                        Bottom
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="text-shadow">Text Shadow</Label>
+                      <Button
+                        variant={textShadow ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setTextShadow(prev => !prev)}
+                      >
+                        {textShadow ? "Enabled" : "Disabled"}
+                      </Button>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="text-bg-color">Text Background</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start">
+                          <div 
+                            className="w-4 h-4 rounded-full border border-border mr-2" 
+                            style={{ backgroundColor: textBgColor || 'transparent' }}
+                          />
+                          {textBgColor ? 'Background Color' : 'No Background'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="text-bg-color-picker">Choose Color</Label>
+                          <Input
+                            id="text-bg-color-picker"
+                            type="color"
+                            value={textBgColor || '#000000'}
+                            onChange={(e) => setTextBgColor(e.target.value)}
+                            className="w-full"
+                          />
+                          <div className="flex gap-2 mt-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setTextBgColor('')}
+                              className="flex-1"
+                            >
+                              Clear
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => setTextBgColor('#000000')}
+                              className="flex-1"
+                            >
+                              Black
+                            </Button>
+                          </div>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </TabsContent>
+                
+                <TabsContent value="effects" className="mt-0 space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="bg-color">Background Color</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start">
+                          <Palette className="h-4 w-4 mr-2" />
+                          {backgroundColor ? 'Change Color' : 'Add Background'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="bg-color-picker">Choose Color</Label>
+                          <Input
+                            id="bg-color-picker"
+                            type="color"
+                            value={backgroundColor || '#ffffff'}
+                            onChange={(e) => setBackgroundColor(e.target.value)}
+                            className="w-full"
+                          />
+                          <div className="flex gap-2 mt-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setBackgroundColor('')}
+                              className="flex-1"
+                            >
+                              Transparent
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => setBackgroundColor('#ffffff')}
+                              className="flex-1"
+                            >
+                              White
+                            </Button>
+                          </div>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                   </div>
                 </TabsContent>
               </div>
